@@ -2,188 +2,241 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
-# --- MÉTODOS DE ASIGNACIÓN INICIAL ---
-
-def inicial_esquina_noroeste(s, d):
-    s_tmp, d_tmp = s.copy(), d.copy()
-    x = np.zeros((len(s), len(d)))
-    i, j = 0, 0
-    while i < len(s) and j < len(d):
-        cant = min(s_tmp[i], d_tmp[j])
-        x[i, j] = cant
-        s_tmp[i] -= cant
-        d_tmp[j] -= cant
-        if s_tmp[i] == 0: i += 1
-        elif d_tmp[j] == 0: j += 1
-    return x
-
-def inicial_minimo_filas(s, d, costos):
-    s_tmp, d_tmp = s.copy(), d.copy()
-    x = np.zeros(costos.shape)
-    for i in range(len(s)):
-        while s_tmp[i] > 0:
-            # Buscar destinos con demanda pendiente
-            disp = [j for j in range(len(d)) if d_tmp[j] > 0]
-            if not disp: break
-            # Encontrar el de menor costo en la fila actual i
-            j = disp[np.argmin(costos[i, disp])]
-            cant = min(s_tmp[i], d_tmp[j])
-            x[i, j] = cant
-            s_tmp[i] -= cant
-            d_tmp[j] -= cant
-    return x
-
-def inicial_vogel(s, d, costos):
-    s_tmp, d_tmp = s.copy(), d.copy()
-    x = np.zeros(costos.shape)
-    f_vivas, c_vivas = list(range(len(s))), list(range(len(d)))
-    while f_vivas and c_vivas:
-        penal = []
-        for i in f_vivas:
-            c_f = sorted([costos[i, j] for j in c_vivas])
-            penal.append((c_f[1]-c_f[0] if len(c_f)>1 else c_f[0], 'F', i))
-        for j in c_vivas:
-            c_c = sorted([costos[i, j] for i in f_vivas])
-            penal.append((c_c[1]-c_c[0] if len(c_c)>1 else c_c[0], 'C', j))
-        p_max, tipo, idx = max(penal, key=lambda x: x[0])
-        if tipo == 'F':
-            i = idx
-            j = c_vivas[np.argmin([costos[i, c] for c in c_vivas])]
-        else:
-            j = idx
-            i = f_vivas[np.argmin([costos[r, j] for r in f_vivas])]
-        cant = min(s_tmp[i], d_tmp[j])
-        x[i, j] = cant
-        s_tmp[i], d_tmp[j] = s_tmp[i]-cant, d_tmp[j]-cant
-        if s_tmp[i] == 0: f_vivas.remove(i)
-        elif d_tmp[j] == 0: c_vivas.remove(j)
-    return x
-
-# --- LÓGICA MODI Y BALANCEO ---
+# --- 1. ALGORITMOS PRINCIPALES ---
 
 def balancear_problema(S, D, C):
     S, D = S.astype(float), D.astype(float)
-    t_s, t_d = sum(S), sum(D)
-    new_S, new_D, new_C = S.copy(), D.copy(), C.copy()
-    msg = ""
-    if t_s > t_d:
-        diff = t_s - t_d
-        new_D = np.append(D, diff)
-        new_C = np.hstack((C, np.zeros((len(S), 1))))
-        msg = f"⚖️ **Balanceo:** Oferta > Demanda. Se añadió Destino Ficticio (+{diff})."
-    elif t_d > t_s:
-        diff = t_d - t_s
-        new_S = np.append(S, diff)
-        new_C = np.vstack((C, np.zeros((1, len(D)))))
-        msg = f"⚖️ **Balanceo:** Demanda > Oferta. Se añadió Origen Ficticio (+{diff})."
-    else: msg = "✅ El problema ya está balanceado."
-    return new_S, new_D, new_C, msg
+    if sum(S) > sum(D):
+        D = np.append(D, sum(S) - sum(D))
+        C = np.hstack((C, np.zeros((len(S), 1))))
+    elif sum(D) > sum(S):
+        S = np.append(S, sum(D) - sum(S))
+        C = np.vstack((C, np.zeros((1, len(D)))))
+        
+    # EL TRUCO DE EPSILON: Previene la Degeneración
+    # Garantiza que la matriz SIEMPRE tendrá exactamente m + n - 1 celdas básicas
+    eps = 1e-5
+    for i in range(len(S)):
+        S[i] += eps
+        D[-1] += eps
+        
+    return S, D, C
 
-def calcular_modi(x, costos):
-    nf, nc = costos.shape
-    u, v = [None]*nf, [None]*nc
-    u[0] = 0
-    for _ in range(nf + nc):
-        for r in range(nf):
-            for c in range(nc):
-                if x[r, c] > 0:
-                    if u[r] is not None and v[c] is None: v[c] = costos[r, c] - u[r]
-                    elif v[c] is not None and u[r] is None: u[r] = costos[r, c] - v[c]
-    u = np.array([val if val is not None else 0 for val in u])
-    v = np.array([val if val is not None else 0 for val in v])
-    cr = np.zeros((nf, nc))
-    for r in range(nf):
-        for c in range(nc):
-            if x[r, c] == 0: cr[r, c] = costos[r, c] - u[r] - v[c]
-    return u, v, cr
+def esquina_noroeste(S, D):
+    x = np.zeros((len(S), len(D)))
+    s_copy, d_copy = S.copy(), D.copy()
+    i, j = 0, 0
+    while i < len(S) and j < len(D):
+        val = min(s_copy[i], d_copy[j])
+        x[i, j] = val
+        s_copy[i] -= val
+        d_copy[j] -= val
+        
+        if s_copy[i] < 1e-9 and d_copy[j] < 1e-9:
+            i += 1
+            j += 1
+        elif s_copy[i] < 1e-9: 
+            i += 1
+        else: 
+            j += 1
+    return x
 
-def encontrar_ciclo(x, inicio):
-    nf, nc = x.shape
-    def buscar(camino, fila_act):
-        if len(camino) > 3:
-            if fila_act and camino[-1][0] == camino[0][0]: return camino
-            if not fila_act and camino[-1][1] == camino[0][1]: return camino
-        r, c = camino[-1]
-        if fila_act:
-            for j in range(nc):
-                if j != c and x[r, j] > 0:
-                    res = buscar(camino + [(r, j)], False)
-                    if res: return res
+def minimo_costo_fila(S, D, C):
+    x = np.zeros((len(S), len(D)))
+    s_copy, d_copy = S.copy(), D.copy()
+    
+    for i in range(len(S)):
+        while s_copy[i] > 1e-9:
+            disp_j = [j for j in range(len(D)) if d_copy[j] > 1e-9]
+            if not disp_j:
+                break
+            
+            mejor_j = disp_j[np.argmin(C[i, disp_j])]
+            val = min(s_copy[i], d_copy[mejor_j])
+            x[i, mejor_j] = val
+            s_copy[i] -= val
+            d_copy[mejor_j] -= val
+    return x
+
+def aproximacion_vogel(S, D, C):
+    x = np.zeros((len(S), len(D)))
+    s_copy, d_copy = S.copy(), D.copy()
+    
+    filas_activas = list(range(len(S)))
+    cols_activas = list(range(len(D)))
+    
+    while filas_activas and cols_activas:
+        penal_filas = []
+        penal_cols = []
+        
+        for i in filas_activas:
+            costos = sorted([C[i, j] for j in cols_activas])
+            pen = costos[1] - costos[0] if len(costos) > 1 else costos[0]
+            penal_filas.append((pen, 'f', i))
+            
+        for j in cols_activas:
+            costos = sorted([C[i, j] for i in filas_activas])
+            pen = costos[1] - costos[0] if len(costos) > 1 else costos[0]
+            penal_cols.append((pen, 'c', j))
+            
+        penalizaciones = penal_filas + penal_cols
+        max_pen = max(penalizaciones, key=lambda item: item[0])
+        
+        if max_pen[1] == 'f':
+            i = max_pen[2]
+            j = cols_activas[np.argmin([C[i, c] for c in cols_activas])]
         else:
-            for i in range(nf):
-                if i != r and x[i, c] > 0:
-                    res = buscar(camino + [(i, c)], True)
-                    if res: return res
-        return None
-    return buscar([inicio], False)
+            j = max_pen[2]
+            i = filas_activas[np.argmin([C[r, j] for r in filas_activas])]
+            
+        val = min(s_copy[i], d_copy[j])
+        x[i, j] = val
+        s_copy[i] -= val
+        d_copy[j] -= val
+        
+        # Uso de la tolerancia epsilon para remover filas o columnas agotadas
+        if s_copy[i] < 1e-9 and d_copy[j] < 1e-9:
+            if len(filas_activas) > 1: filas_activas.remove(i)
+            else: cols_activas.remove(j)
+        elif s_copy[i] < 1e-9:
+            filas_activas.remove(i)
+        else:
+            cols_activas.remove(j)
+            
+    return x
 
-# --- INTERFAZ STREAMLIT ---
+def obtener_base(x):
+    m, n = x.shape
+    return [(i, j) for i in range(m) for j in range(n) if x[i, j] > 1e-8]
 
-st.set_page_config(page_title="Hitchcock Solver Full", layout="wide")
-st.title("🚛 Solucionador de Transporte Hitchcock")
+def calcular_duales(base, C):
+    m, n = C.shape
+    u, v = {0: 0.0}, {}
+    progreso = True
+    while progreso and (len(u) < m or len(v) < n):
+        progreso = False
+        for r, c in base:
+            if r in u and c not in v:
+                v[c] = C[r, c] - u[r]
+                progreso = True
+            elif c in v and r not in u:
+                u[r] = C[r, c] - v[c]
+                progreso = True
+    return (np.array([u.get(i, 0.0) for i in range(m)]), 
+            np.array([v.get(j, 0.0) for j in range(n)]))
+
+def obtener_ciclo(celdas_base, celda_inicio):
+    pila = [
+        (celda_inicio, True, [celda_inicio]), 
+        (celda_inicio, False, [celda_inicio])
+    ]
+    
+    while pila:
+        actual, mover_fila, camino = pila.pop()
+        
+        if len(camino) >= 4:
+            if mover_fila and actual[0] == celda_inicio[0]: return camino
+            if not mover_fila and actual[1] == celda_inicio[1]: return camino
+                
+        r, c = actual
+        for br, bc in celdas_base:
+            if (br, bc) not in camino:
+                if mover_fila and br == r and bc != c:
+                    pila.append(((br, bc), False, camino + [(br, bc)]))
+                elif not mover_fila and bc == c and br != r:
+                    pila.append(((br, bc), True, camino + [(br, bc)]))
+    return None
+
+# --- 2. INTERFAZ STREAMLIT ---
+
+st.set_page_config(page_title="Optimizador de Transporte", layout="wide")
+st.title("🚛 Optimizador de Transporte (A prueba de Degeneración)")
 
 with st.sidebar:
-    st.header("Ajustes")
-    metodo_sel = st.selectbox("Método Inicial", ["Esquina Noroeste", "Mínimo por Fila", "Vogel"])
-    n_or = st.number_input("Orígenes", 2, 6, 3)
-    n_de = st.number_input("Destinos", 2, 6, 4)
+    st.header("1. Ajustes")
+    metodo = st.selectbox("Método de Solución Inicial", ["Esquina Noroeste", "Costo Mínimo por Fila", "Aproximación de Vogel"])
+    st.divider()
+    st.header("2. Dimensiones")
+    n_or = st.number_input("Orígenes (Filas)", min_value=2, max_value=10, value=3)
+    n_de = st.number_input("Destinos (Columnas)", min_value=2, max_value=10, value=4)
 
-st.subheader("1. Entrada de Datos")
-col1, col2, col3 = st.columns([1, 1, 3])
-with col1: of_df = st.data_editor(pd.DataFrame({"Oferta": [20, 30, 25, 10, 10, 10][:n_or]}))
-with col2: de_df = st.data_editor(pd.DataFrame({"Demanda": [10, 25, 20, 20, 10, 10][:n_de]}))
-with col3: 
-    c_base = np.array([[8,6,10,9,5,5],[9,7,4,2,5,5],[3,4,2,5,5,5]])[:n_or, :n_de]
-    c_df = st.data_editor(pd.DataFrame(c_base, index=[f"O{i+1}" for i in range(n_or)], columns=[f"D{j+1}" for j in range(n_de)]))
+if n_or == 3 and n_de == 4:
+    oferta_def, demanda_def = [20, 30, 25], [10, 25, 20, 20]
+    costos_def = [[8, 6, 10, 9], [9, 7, 4, 2], [3, 4, 2, 5]]
+else:
+    oferta_def, demanda_def = [10] * n_or, [10] * n_de
+    costos_def = np.zeros((n_or, n_de))
 
-if st.button("🚀 Resolver Paso a Paso"):
+c1, c2, c3 = st.columns([1, 1, 3])
+with c1: of_df = st.data_editor(pd.DataFrame(oferta_def, columns=["Oferta"], index=[f"O{i+1}" for i in range(n_or)]))
+with c2: de_df = st.data_editor(pd.DataFrame(demanda_def, columns=["Demanda"], index=[f"D{j+1}" for j in range(n_de)]))
+with c3: c_df = st.data_editor(pd.DataFrame(costos_def, columns=[f"D{j+1}" for j in range(n_de)], index=[f"O{i+1}" for i in range(n_or)]))
+
+if st.button("🚀 Resolver Problema"):
     S, D, C = of_df["Oferta"].values, de_df["Demanda"].values, c_df.values
-    S_b, D_b, C_b, msg = balancear_problema(S, D, C)
-    st.info(msg)
     
-    lbl_r = [f"O{i+1}" for i in range(len(S))] + (["O_fict"] if len(S_b) > len(S) else [])
-    lbl_c = [f"D{j+1}" for j in range(len(D))] + (["D_fict"] if len(D_b) > len(D) else [])
-
-    # Solución Inicial
-    if metodo_sel == "Esquina Noroeste": x = inicial_esquina_noroeste(S_b, D_b)
-    elif metodo_sel == "Mínimo por Fila": x = inicial_minimo_filas(S_b, D_b, C_b)
-    else: x = inicial_vogel(S_b, D_b, C_b)
+    suma_s, suma_d = sum(S), sum(D)
     
-    st.write(f"### 🏁 Fase 1: Solución por {metodo_sel}")
-    st.dataframe(pd.DataFrame(x, index=lbl_r, columns=lbl_c))
-    st.metric("Costo Inicial", f"{np.sum(x*C_b)} €")
-
-    # Iteraciones MODI
-    it = 1
-    while it <= 12:
-        u, v, cr = calcular_modi(x, C_b)
-        min_v = np.min(cr)
+    # Alerta visual si el problema no está balanceado
+    if suma_s != suma_d:
+        st.warning(f"⚠️ El problema NO está balanceado (Oferta: {suma_s} | Demanda: {suma_d}). Se ha añadido un nodo ficticio con costo 0 automáticamente.")
+    else:
+        st.success("✅ El problema está perfectamente balanceado.")
         
-        if min_v >= -1e-9: # Tolerancia para flotantes
-            st.success(f"🏆 ¡Solución Óptima alcanzada en la iteración {it-1}!")
-            st.write("### Asignación Final Óptima")
-            st.table(pd.DataFrame(x, index=lbl_r, columns=lbl_c))
-            st.metric("Costo Mínimo Total", f"{np.sum(x*C_b)} €")
+    S_b, D_b, C_b = balancear_problema(S, D, C)
+    
+    lbl_r = [f"O{i+1}" for i in range(len(S))] + (["O_Ficticio"] if len(S_b) > len(S) else [])
+    lbl_c = [f"D{j+1}" for j in range(len(D))] + (["D_Ficticio"] if len(D_b) > len(D) else [])
+
+    if metodo == "Esquina Noroeste":
+        x = esquina_noroeste(S_b, D_b)
+    elif metodo == "Costo Mínimo por Fila":
+        x = minimo_costo_fila(S_b, D_b, C_b)
+    else:
+        x = aproximacion_vogel(S_b, D_b, C_b)
+        
+    st.subheader(f"🏁 Solución Inicial ({metodo})")
+    st.dataframe(pd.DataFrame(np.round(x), index=lbl_r, columns=lbl_c).astype(int))
+    st.metric("Costo Inicial", f"{int(np.sum(np.round(x) * C_b))} €")
+    
+    for it in range(1, 21):
+        base = obtener_base(x)
+        u, v = calcular_duales(base, C_b)
+        
+        cr = np.zeros(C_b.shape)
+        min_cr, entrante = 0, None
+        
+        for r in range(C_b.shape[0]):
+            for c in range(C_b.shape[1]):
+                if (r, c) not in base:
+                    cr[r, c] = C_b[r, c] - u[r] - v[c]
+                    if cr[r, c] < min_cr - 1e-6:
+                        min_cr, entrante = cr[r, c], (r, c)
+        
+        # UI: Mostrar Variables Duales y Costos Relativos
+        with st.expander(f"🔄 Iteración {it} | Costo Actual: {int(np.sum(np.round(x)*C_b))} €"):
+            col_u, col_v = st.columns(2)
+            
+            with col_u:
+                st.write("**Duales de Fila ($u_i$):**")
+                st.dataframe(pd.DataFrame(np.round(u, 2), index=lbl_r, columns=["u"]))
+                
+            with col_v:
+                st.write("**Duales de Columna ($v_j$):**")
+                st.dataframe(pd.DataFrame(np.round(v, 2), index=lbl_c, columns=["v"]).T)
+                
+            st.write("**Costos Relativos ($C_{ij} - u_i - v_j$):**")
+            st.dataframe(pd.DataFrame(np.round(cr, 2), index=lbl_r, columns=lbl_c).style.highlight_min(axis=None, color='#ff9999'))
+        
+        if entrante is None:
+            st.success(f"🏆 ¡Solución Óptima Alcanzada! Costo Total Mínimo: **{int(np.sum(np.round(x)*C_b))} €**")
+            st.table(pd.DataFrame(np.round(x), index=lbl_r, columns=lbl_c).astype(int))
             break
             
-        entrada = np.unravel_index(np.argmin(cr), cr.shape)
+        ciclo = obtener_ciclo(base + [entrante], entrante)
+        nodos_neg = [ciclo[k] for k in range(1, len(ciclo), 2)]
+        theta = min([x[r, c] for r, c in nodos_neg])
         
-        with st.expander(f"🔍 Paso {it}: Análisis de Duales y Costes Relativos"):
-            ca, cb = st.columns(2)
-            with ca:
-                st.write("**Multiplicadores ($u_i, v_j$):**")
-                st.write(pd.DataFrame({"u": u}, index=lbl_r).T)
-                st.write(pd.DataFrame({"v": v}, index=lbl_c).T)
-            with cb:
-                st.write(f"**Costo actual:** {np.sum(x*C_b)} €")
-                st.write(f"**Entra celda:** {lbl_r[entrada[0]]}-{lbl_c[entrada[1]]}")
-
-            st.write("**Matriz de Costes Relativos ($\bar{C}_{ij}$):**")
-            st.dataframe(pd.DataFrame(cr, index=lbl_r, columns=lbl_c).style.highlight_min(axis=None, color='lightcoral'))
-
-        ciclo = encontrar_ciclo(x, entrada)
-        n_neg = [ciclo[k] for k in range(1, len(ciclo), 2)]
-        theta = min(x[r, c] for r, c in n_neg)
         for k, (r, c) in enumerate(ciclo):
-            x[r, c] += theta if k % 2 == 0 else -theta
-        it += 1
+            if k % 2 == 0: x[r, c] += theta
+            else: x[r, c] -= theta
